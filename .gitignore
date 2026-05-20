@@ -1,0 +1,55 @@
+# --- Dart / Flutter ---
+.dart_tool/
+.packages
+.pub/
+build/
+
+# Flutter-specific
+.flutter-plugins
+.flutter-plugins-dependencies
+.flutter-versions
+.generated/
+.melos_tool/
+
+# Generated files
+*.g.dart
+*.freezed.dart
+*.mocks.dart
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# VS Code settings (optional)
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Logs
+*.log
+
+# Coverage
+coverage/
+
+# Environment files
+.env
+.env.*
+
+# Dependency lock files (keep if app, ignore if package)
+# pubspec.lock
+
+# Test cache
+test/.test_coverage.dart
+
+# Misc
+*.tmp
+*.swp
+consumer_app

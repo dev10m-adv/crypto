@@ -4,11 +4,13 @@ import 'dart:typed_data';
 import 'package:openpgp/openpgp.dart';
 
 import '../../core/contracts/i_crypto_provider.dart';
+import '../../core/contracts/i_key_inspection_provider.dart';
 import '../../core/exceptions/crypto_exceptions.dart';
 import '../../core/logging/crypto_logger.dart';
 import '../../core/models/crypto_algorithm.dart';
 import '../../core/models/crypto_key.dart';
 import '../../core/models/key_generation_params.dart';
+import '../../core/models/key_metadata.dart';
 import '../../core/models/key_type.dart';
 import '../../core/models/signature_verification_result.dart';
 import 'worker/openpgp_op.dart';
@@ -25,7 +27,7 @@ import 'worker/openpgp_worker_pool.dart';
 ///
 /// Key format:
 ///   [CryptoKey.rawBytes] = UTF-8 bytes of the ASCII-armored OpenPGP key block.
-class OpenPgpCryptoProvider implements ICryptoProvider {
+class OpenPgpCryptoProvider implements ICryptoProvider, IKeyInspectionProvider {
   final OpenPgpWorkerPool _pool;
   final CryptoLogger _log;
 
@@ -284,6 +286,62 @@ class OpenPgpCryptoProvider implements ICryptoProvider {
   Uint8List exportPrivateKey(CryptoKey key) {
     _assertKeyType(key, KeyType.privateKey);
     return key.rawBytes;
+  }
+
+  // ── Key inspection ─────────────────────────────────────────────────────────
+
+  /// Returns [OpenPgpPublicKeyMetadata] for [key].
+  ///
+  /// Delegates to [OpenPGP.getPublicKeyMetadata] inside the worker isolate so
+  /// that the native FFI / platform-channel call runs on the correct binding.
+  @override
+  Future<OpenPgpPublicKeyMetadata> getPublicKeyMetadata(CryptoKey key) async {
+    _assertKeyType(key, KeyType.publicKey);
+    try {
+      final result = await _pool.run(
+        op: OpenPgpOp.getPublicKeyMetadata,
+        payload: {
+          'publicKey': TransferableTypedData.fromList([key.rawBytes]),
+        },
+      );
+      return OpenPgpPublicKeyMetadata.fromMap(
+        Map<String, dynamic>.from(result as Map),
+      );
+    } catch (e) {
+      _log.error('OpenPGP getPublicKeyMetadata failed', e);
+      throw CryptoOperationException(
+        'OpenPGP getPublicKeyMetadata failed: $e',
+        algorithm: algorithm,
+        cause: e,
+      );
+    }
+  }
+
+  /// Returns [OpenPgpPrivateKeyMetadata] for [key].
+  ///
+  /// Delegates to [OpenPGP.getPrivateKeyMetadata] inside the worker isolate so
+  /// that the native FFI / platform-channel call runs on the correct binding.
+  @override
+  Future<OpenPgpPrivateKeyMetadata> getPrivateKeyMetadata(CryptoKey key) async {
+    _assertKeyType(key, KeyType.privateKey);
+    try {
+      final result = await _pool.run(
+        op: OpenPgpOp.getPrivateKeyMetadata,
+        payload: {
+          'privateKey': TransferableTypedData.fromList([key.rawBytes]),
+        },
+      );
+      return OpenPgpPrivateKeyMetadata.fromMap(
+        Map<String, dynamic>.from(result as Map),
+      );
+    } catch (e) {
+      _log.error('OpenPGP getPrivateKeyMetadata failed', e);
+      throw CryptoOperationException(
+        'OpenPGP getPrivateKeyMetadata failed: $e',
+        algorithm: algorithm,
+        cause: e,
+      );
+    }
   }
 
   // ── Passphrase validation ──────────────────────────────────────────────────

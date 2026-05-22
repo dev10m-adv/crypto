@@ -2,11 +2,13 @@ import 'dart:typed_data';
 
 import '../../core/contracts/i_certificate_signing_service.dart';
 import '../../core/contracts/i_crypto_provider.dart';
+import '../../core/contracts/i_key_inspection_provider.dart';
 import '../../core/exceptions/crypto_exceptions.dart';
 import '../../core/logging/crypto_logger.dart';
 import '../../core/models/crypto_algorithm.dart';
 import '../../core/models/crypto_key.dart';
 import '../../core/models/key_generation_params.dart';
+import '../../core/models/key_metadata.dart';
 import '../../core/models/key_type.dart';
 import '../../core/models/signature_verification_result.dart';
 import 'openssl/smime_certificate_generator.dart';
@@ -28,7 +30,7 @@ import 'openssl/smime_openssl_engine.dart';
 /// To enable S/MIME signature chain validation, set
 /// [CryptoKey.metadata]['caCertificate'] = CA PEM bytes on the sender's public
 /// key before calling [verify].
-class SmimeCryptoProvider implements ICryptoProvider {
+class SmimeCryptoProvider implements ICryptoProvider, IKeyInspectionProvider {
   final SmimeOpensslEngine _engine;
   final SmimeCertificateGenerator _certGen;
   final CryptoLogger _log;
@@ -43,13 +45,13 @@ class SmimeCryptoProvider implements ICryptoProvider {
     String opensslPath = 'openssl',
     ICertificateSigningService? signingService,
     CryptoLogger logger = CryptoLogger.silent,
-  })  : _engine = SmimeOpensslEngine(opensslPath: opensslPath, logger: logger),
-        _certGen = SmimeCertificateGenerator(
-          opensslPath: opensslPath,
-          signingService: signingService,
-          logger: logger,
-        ),
-        _log = logger;
+  }) : _engine = SmimeOpensslEngine(opensslPath: opensslPath, logger: logger),
+       _certGen = SmimeCertificateGenerator(
+         opensslPath: opensslPath,
+         signingService: signingService,
+         logger: logger,
+       ),
+       _log = logger;
 
   @override
   CryptoAlgorithm get algorithm => CryptoAlgorithm.smime;
@@ -238,6 +240,47 @@ class SmimeCryptoProvider implements ICryptoProvider {
   Uint8List exportPrivateKey(CryptoKey key) {
     _assertKeyType(key, KeyType.privateKey);
     return key.rawBytes;
+  }
+
+  // ── Key inspection ─────────────────────────────────────────────────────────
+
+  /// Returns [SmimePublicKeyMetadata] for [key] by parsing the PEM X.509
+  /// certificate via `openssl x509 -text`.
+  @override
+  Future<SmimePublicKeyMetadata> getPublicKeyMetadata(CryptoKey key) async {
+    _assertKeyType(key, KeyType.publicKey);
+    try {
+      return await _engine.parseCertificate(key.rawBytes);
+    } catch (e) {
+      _log.error('S/MIME getPublicKeyMetadata failed', e);
+      throw CryptoOperationException(
+        'S/MIME getPublicKeyMetadata failed: $e',
+        algorithm: algorithm,
+        cause: e,
+      );
+    }
+  }
+
+  /// Returns [SmimePrivateKeyMetadata] for [key].
+  ///
+  /// If `key.metadata['certificate']` is present, the bundled certificate is
+  /// also parsed and attached as [SmimePrivateKeyMetadata.associatedCertificate].
+  @override
+  Future<SmimePrivateKeyMetadata> getPrivateKeyMetadata(CryptoKey key) async {
+    _assertKeyType(key, KeyType.privateKey);
+    try {
+      return await _engine.parsePrivateKey(
+        key.rawBytes,
+        certificate: key.metadata['certificate'],
+      );
+    } catch (e) {
+      _log.error('S/MIME getPrivateKeyMetadata failed', e);
+      throw CryptoOperationException(
+        'S/MIME getPrivateKeyMetadata failed: $e',
+        algorithm: algorithm,
+        cause: e,
+      );
+    }
   }
 
   // ── Passphrase validation ──────────────────────────────────────────────────

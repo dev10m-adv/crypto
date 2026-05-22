@@ -3,12 +3,14 @@ import 'dart:typed_data';
 
 import '../core/contracts/i_crypto_provider.dart';
 import '../core/contracts/i_execution_strategy.dart';
+import '../core/contracts/i_key_inspection_provider.dart';
 import '../core/contracts/i_storage_provider.dart';
 import '../core/exceptions/crypto_exceptions.dart';
 import '../core/logging/crypto_logger.dart';
 import '../core/models/crypto_algorithm.dart';
 import '../core/models/crypto_key.dart';
 import '../core/models/key_generation_params.dart';
+import '../core/models/key_metadata.dart';
 import '../core/models/key_type.dart';
 import '../core/models/signature_verification_result.dart';
 import '../core/registry/provider_registry.dart';
@@ -261,6 +263,60 @@ class CryptoSdk {
   /// Returns the canonical serialised bytes for [key] (private side).
   Uint8List exportPrivateKey({required CryptoKey key}) =>
       _registry.require(key.algorithm).exportPrivateKey(key);
+
+  // ── Key inspection ─────────────────────────────────────────────────────────
+
+  /// Returns structured metadata for [key] (public side).
+  ///
+  /// The concrete return type depends on the algorithm:
+  /// - OpenPGP → [OpenPgpPublicKeyMetadata]
+  /// - S/MIME  → [SmimePublicKeyMetadata]
+  ///
+  /// Throws [CryptoOperationException] if the registered provider for [key]'s
+  /// algorithm does not implement [IKeyInspectionProvider].
+  Future<KeyMetadataBase> getPublicKeyMetadata({
+    required CryptoKey key,
+    CryptoAlgorithm? algorithm,
+  }) {
+    final resolved = _resolveAlgorithm(
+      explicit: algorithm,
+      fallback: key.algorithm,
+    );
+    final provider = _registry.require(resolved);
+    if (provider is! IKeyInspectionProvider) {
+      throw CryptoOperationException(
+        'The registered ${resolved.name} provider does not support key inspection.',
+        algorithm: resolved,
+      );
+    }
+    return (provider as IKeyInspectionProvider).getPublicKeyMetadata(key);
+  }
+
+  /// Returns structured metadata for [key] (private side).
+  ///
+  /// The concrete return type depends on the algorithm:
+  /// - OpenPGP → [OpenPgpPrivateKeyMetadata]
+  /// - S/MIME  → [SmimePrivateKeyMetadata]
+  ///
+  /// Throws [CryptoOperationException] if the registered provider for [key]'s
+  /// algorithm does not implement [IKeyInspectionProvider].
+  Future<KeyMetadataBase> getPrivateKeyMetadata({
+    required CryptoKey key,
+    CryptoAlgorithm? algorithm,
+  }) {
+    final resolved = _resolveAlgorithm(
+      explicit: algorithm,
+      fallback: key.algorithm,
+    );
+    final provider = _registry.require(resolved);
+    if (provider is! IKeyInspectionProvider) {
+      throw CryptoOperationException(
+        'The registered ${resolved.name} provider does not support key inspection.',
+        algorithm: resolved,
+      );
+    }
+    return (provider as IKeyInspectionProvider).getPrivateKeyMetadata(key);
+  }
 
   // ── SDK-managed secure storage ─────────────────────────────────────────────
 

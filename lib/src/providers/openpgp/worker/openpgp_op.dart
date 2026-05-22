@@ -8,7 +8,15 @@ import 'package:openpgp/openpgp.dart';
 const _binaryEnvelopePrefix = '__SECM_B64__:';
 
 /// Operations the OpenPGP worker isolate can perform.
-enum OpenPgpOp { decrypt, encrypt, encryptString, sign, verify }
+enum OpenPgpOp {
+  decrypt,
+  encrypt,
+  encryptString,
+  sign,
+  verify,
+  getPublicKeyMetadata,
+  getPrivateKeyMetadata,
+}
 
 /// Long-lived worker-isolate entrypoint for OpenPGP operations.
 ///
@@ -56,6 +64,10 @@ void openPgpWorkerMain(SendPort mainSendPort) {
           result = await _sign(payload);
         case OpenPgpOp.verify:
           result = await _verify(payload);
+        case OpenPgpOp.getPublicKeyMetadata:
+          result = await _getPublicKeyMetadata(payload);
+        case OpenPgpOp.getPrivateKeyMetadata:
+          result = await _getPrivateKeyMetadata(payload);
       }
       replyPort.send({'jobId': jobId, 'success': true, 'result': result});
     } catch (e, st) {
@@ -129,4 +141,65 @@ Future<bool> _verify(Map<String, Object?> p) async {
     _bytes(p['data']),
     utf8.decode(_bytes(p['publicKey'])),
   );
+}
+
+/// Returns a plain [Map] (sendable across isolate boundary) containing the
+/// fields of the `openpgp` package's native [PublicKeyMetadata].
+Future<Map<String, dynamic>> _getPublicKeyMetadata(
+  Map<String, Object?> p,
+) async {
+  final meta = await OpenPGP.getPublicKeyMetadata(
+    utf8.decode(_bytes(p['publicKey'])),
+  );
+  return {
+    'algorithm': meta.algorithm,
+    'keyId': meta.keyId,
+    'keyIdShort': meta.keyIdShort,
+    'creationTime': meta.creationTime,
+    'fingerprint': meta.fingerprint,
+    'keyIdNumeric': meta.keyIdNumeric,
+    'isSubKey': meta.isSubKey,
+    'canSign': meta.canSign,
+    'canEncrypt': meta.canEncrypt,
+    'identities': meta.identities
+        .map(
+          (id) => {
+            'id': id.id,
+            'name': id.name,
+            'email': id.email,
+            'comment': id.comment,
+          },
+        )
+        .toList(),
+  };
+}
+
+/// Returns a plain [Map] (sendable across isolate boundary) containing the
+/// fields of the `openpgp` package's native [PrivateKeyMetadata].
+Future<Map<String, dynamic>> _getPrivateKeyMetadata(
+  Map<String, Object?> p,
+) async {
+  final meta = await OpenPGP.getPrivateKeyMetadata(
+    utf8.decode(_bytes(p['privateKey'])),
+  );
+  return {
+    'keyId': meta.keyId,
+    'keyIdShort': meta.keyIdShort,
+    'creationTime': meta.creationTime,
+    'fingerprint': meta.fingerprint,
+    'keyIdNumeric': meta.keyIdNumeric,
+    'isSubKey': meta.isSubKey,
+    'encrypted': meta.encrypted,
+    'canSign': meta.canSign,
+    'identities': meta.identities
+        .map(
+          (id) => {
+            'id': id.id,
+            'name': id.name,
+            'email': id.email,
+            'comment': id.comment,
+          },
+        )
+        .toList(),
+  };
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../../../core/logging/crypto_logger.dart';
+import '../../../core/models/key_metadata.dart';
 
 /// Low-level S/MIME operations backed by the system `openssl` CLI.
 ///
@@ -212,6 +213,270 @@ class SmimeOpensslEngine {
       _log.debug('S/MIME verify: cleaning up ${tmp.dir.path}');
       await _safeCleanup(tmp, tag: 'verify');
     }
+  }
+
+  // ── Key / certificate inspection ───────────────────────────────────────────
+
+  /// Parses an X.509 PEM [certificate] and returns structured metadata.
+  ///
+  /// Runs three `openssl x509` subcommands in parallel:
+  ///   1. `-text` — human-readable certificate dump for most fields.
+  ///   2. `-fingerprint -sha256` — SHA-256 fingerprint.
+  ///   3. `-fingerprint -sha1` — SHA-1 fingerprint.
+  Future<SmimePublicKeyMetadata> parseCertificate(Uint8List certificate) async {
+    final tmp = await _TempFiles.create();
+    try {
+      await tmp.write('cert.pem', certificate);
+      final certPath = tmp.path('cert.pem');
+
+      // Run all three commands in parallel.
+      final results = await Future.wait([
+        Process.run(opensslPath, ['x509', '-text', '-noout', '-in', certPath]),
+        Process.run(opensslPath, [
+          'x509',
+          '-fingerprint',
+          '-sha256',
+          '-noout',
+          '-in',
+          certPath,
+        ]),
+        Process.run(opensslPath, [
+          'x509',
+          '-fingerprint',
+          '-sha1',
+          '-noout',
+          '-in',
+          certPath,
+        ]),
+      ]);
+
+      for (final r in results) {
+        if (r.exitCode != 0) {
+          throw Exception('openssl x509 failed: ${r.stderr}');
+        }
+      }
+
+      final text = results[0].stdout as String;
+      final sha256Line = results[1].stdout as String;
+      final sha1Line = results[2].stdout as String;
+
+      return _parseX509Text(text, sha256Line.trim(), sha1Line.trim());
+    } finally {
+      await _safeCleanup(tmp, tag: 'parseCertificate');
+    }
+  }
+
+  /// Parses PEM RSA/EC [privateKeyPem] and returns structured metadata.
+  ///
+  /// Uses `openssl pkey -text -noout` to extract the algorithm and key size.
+  Future<SmimePrivateKeyMetadata> parsePrivateKey(
+    Uint8List privateKeyPem, {
+    Uint8List? certificate,
+  }) async {
+    final tmp = await _TempFiles.create();
+    try {
+      await tmp.write('key.pem', privateKeyPem);
+
+      final result = await Process.run(opensslPath, [
+        'pkey',
+        '-text',
+        '-noout',
+        '-in',
+        tmp.path('key.pem'),
+      ]);
+      if (result.exitCode != 0) {
+        throw Exception('openssl pkey failed: ${result.stderr}');
+      }
+
+      final text = result.stdout as String;
+      final (algo, bits) = _parsePrivateKeyText(text);
+
+      SmimePublicKeyMetadata? certMeta;
+      if (certificate != null) {
+        certMeta = await parseCertificate(certificate);
+      }
+
+      return SmimePrivateKeyMetadata(
+        privateKeyAlgorithm: algo,
+        keyLength: bits,
+        associatedCertificate: certMeta,
+      );
+    } finally {
+      await _safeCleanup(tmp, tag: 'parsePrivateKey');
+    }
+  }
+
+  // ── Parsing helpers ─────────────────────────────────────────────────────────
+
+  SmimePublicKeyMetadata _parseX509Text(
+    String text,
+    String sha256Line,
+    String sha1Line,
+  ) {
+    // Version: e.g. "Version: 3 (0x2)"
+    final version =
+        int.tryParse(
+          RegExp(r'Version:\s+(\d+)').firstMatch(text)?.group(1) ?? '3',
+        ) ??
+        3;
+
+    // Serial: "Serial Number:\n    ab:cd:ef" or inline
+    final serialMatch = RegExp(
+      r'Serial Number:\s*\n\s*([\da-fA-F:]+)',
+      multiLine: true,
+    ).firstMatch(text);
+    final serialInline = RegExp(
+      r'Serial Number:\s+([\da-fA-F:]+)',
+    ).firstMatch(text);
+    final serialNumber = (serialMatch?.group(1) ?? serialInline?.group(1) ?? '')
+        .trim();
+
+    // Issuer / Subject
+    final issuerDn =
+        RegExp(r'Issuer:\s+(.+)').firstMatch(text)?.group(1)?.trim() ?? '';
+    final subjectDn =
+        RegExp(r'Subject:\s+(.+)').firstMatch(text)?.group(1)?.trim() ?? '';
+
+    // Common name from subject
+    final cn = RegExp(
+      r'CN\s*=\s*([^,\n]+)',
+    ).firstMatch(subjectDn)?.group(1)?.trim();
+
+    // emailAddress from subject DN or SAN
+    final emailFromSubject = RegExp(
+      r'(?:emailAddress|E)\s*=\s*([^\s,\n]+)',
+    ).firstMatch(subjectDn)?.group(1)?.trim();
+    final emailFromSan = RegExp(
+      r'email:([^\s,\n]+)',
+    ).firstMatch(text)?.group(1)?.trim();
+    final emailAddress = emailFromSubject ?? emailFromSan;
+
+    // Validity dates
+    final notBefore =
+        RegExp(r'Not Before:\s+(.+GMT)').firstMatch(text)?.group(1)?.trim() ??
+        '';
+    final notAfter =
+        RegExp(r'Not After\s*:\s+(.+GMT)').firstMatch(text)?.group(1)?.trim() ??
+        '';
+
+    // Public key algorithm and bit size
+    final pkAlgo =
+        RegExp(
+          r'Public Key Algorithm:\s+(\S+)',
+        ).firstMatch(text)?.group(1)?.trim() ??
+        '';
+    final bitMatch = RegExp(
+      r'(?:Public-Key|RSA Public-Key):\s+\((\d+)\s+bit\)',
+    ).firstMatch(text);
+    final keyLength = int.tryParse(bitMatch?.group(1) ?? '0') ?? 0;
+
+    // Key usages
+    final kuMatch = RegExp(
+      r'X509v3 Key Usage:.*?\n\s+(.+)',
+      multiLine: true,
+    ).firstMatch(text);
+    final keyUsages =
+        kuMatch
+            ?.group(1)
+            ?.split(',')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList() ??
+        const [];
+
+    // Extended key usages
+    final ekuMatch = RegExp(
+      r'X509v3 Extended Key Usage:.*?\n\s+(.+)',
+      multiLine: true,
+    ).firstMatch(text);
+    final extendedKeyUsages =
+        ekuMatch
+            ?.group(1)
+            ?.split(',')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList() ??
+        const [];
+
+    // Fingerprints: "SHA256 Fingerprint=AB:CD:..."
+    final sha256 =
+        RegExp(
+          r'(?:SHA256|sha256)\s+Fingerprint\s*=\s*(.+)',
+          caseSensitive: false,
+        ).firstMatch(sha256Line)?.group(1)?.trim() ??
+        '';
+    final sha1 =
+        RegExp(
+          r'(?:SHA1|sha1)\s+Fingerprint\s*=\s*(.+)',
+          caseSensitive: false,
+        ).firstMatch(sha1Line)?.group(1)?.trim() ??
+        '';
+
+    return SmimePublicKeyMetadata(
+      subjectDn: subjectDn,
+      issuerDn: issuerDn,
+      serialNumber: serialNumber,
+      validFrom: _parseX509Date(notBefore),
+      validTo: _parseX509Date(notAfter),
+      emailAddress: emailAddress,
+      commonName: cn,
+      publicKeyAlgorithm: pkAlgo,
+      keyLength: keyLength,
+      sha256Fingerprint: sha256,
+      sha1Fingerprint: sha1,
+      x509Version: version,
+      isSelfSigned: subjectDn == issuerDn,
+      keyUsages: keyUsages,
+      extendedKeyUsages: extendedKeyUsages,
+    );
+  }
+
+  /// Parses `openssl pkey -text` output and returns `(algorithm, bitLength)`.
+  (String, int) _parsePrivateKeyText(String text) {
+    // e.g. "Private-Key: (2048 bit, 2 primes)" or "RSA Private-Key: (2048 bit)"
+    final bitMatch = RegExp(r'\((\d+)\s+bit').firstMatch(text);
+    final bits = int.tryParse(bitMatch?.group(1) ?? '0') ?? 0;
+
+    String algo = 'rsaEncryption';
+    if (text.contains('EC') || text.contains('ECDSA')) {
+      algo = 'id-ecPublicKey';
+    } else if (text.contains('DSA')) {
+      algo = 'dsaEncryption';
+    }
+    return (algo, bits);
+  }
+
+  static const _months = {
+    'Jan': 1,
+    'Feb': 2,
+    'Mar': 3,
+    'Apr': 4,
+    'May': 5,
+    'Jun': 6,
+    'Jul': 7,
+    'Aug': 8,
+    'Sep': 9,
+    'Oct': 10,
+    'Nov': 11,
+    'Dec': 12,
+  };
+
+  /// Parses an OpenSSL date string like `"Jan  1 00:00:00 2024 GMT"`.
+  static DateTime _parseX509Date(String s) {
+    final parts = s.trim().split(RegExp(r'\s+'));
+    if (parts.length < 5) return DateTime.utc(1970);
+    final month = _months[parts[0]] ?? 1;
+    final day = int.tryParse(parts[1]) ?? 1;
+    final time = parts[2].split(':');
+    final year = int.tryParse(parts[3]) ?? 1970;
+    return DateTime.utc(
+      year,
+      month,
+      day,
+      int.tryParse(time[0]) ?? 0,
+      int.tryParse(time[1]) ?? 0,
+      int.tryParse(time[2]) ?? 0,
+    );
   }
 
   // ── Shared helpers ─────────────────────────────────────────────────────────

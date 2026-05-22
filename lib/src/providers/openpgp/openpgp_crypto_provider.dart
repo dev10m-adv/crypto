@@ -224,17 +224,18 @@ class OpenPgpCryptoProvider implements ICryptoProvider {
       );
     }
 
+    final ko = params.keyOptions;
     final options = Options()
       ..name = params.name
       ..email = params.email
       ..passphrase = params.passphrase
       ..keyOptions = (KeyOptions()
-        ..algorithm = Algorithm.EDDSA
-        ..curve = Curve.CURVE25519
-        ..hash = Hash.SHA256
-        ..cipher = Cipher.AES256
-        ..compression = Compression.ZLIB
-        ..compressionLevel = 6);
+        ..algorithm = ko.algorithm
+        ..curve = ko.curve
+        ..hash = ko.hash
+        ..cipher = ko.cipher
+        ..compression = ko.compression
+        ..compressionLevel = ko.compressionLevel);
 
     _log.info('Generating OpenPGP key pair for ${params.email}');
     final keyPair = await Isolate.run(

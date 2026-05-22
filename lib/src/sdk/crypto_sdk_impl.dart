@@ -352,10 +352,7 @@ class CryptoSdk {
 
   /// Stores [passphrase] under [identity] (typically an email address).
   Future<void> storePassphrase(String identity, String passphrase) =>
-      _storage.write(
-        key: '$_passphraseKeyPrefix$identity',
-        value: passphrase,
-      );
+      _storage.write(key: '$_passphraseKeyPrefix$identity', value: passphrase);
 
   /// Returns the passphrase stored for [identity], or null if absent.
   Future<String?> loadPassphrase(String identity) =>

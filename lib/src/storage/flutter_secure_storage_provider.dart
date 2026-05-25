@@ -15,7 +15,7 @@ class FlutterSecureStorageProvider implements ISecureStorageProvider {
   final FlutterSecureStorage _storage;
 
   FlutterSecureStorageProvider({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+    : _storage = storage ?? const FlutterSecureStorage();
 
   @override
   Future<void> write({required String key, required String value}) =>
@@ -33,4 +33,8 @@ class FlutterSecureStorageProvider implements ISecureStorageProvider {
 
   @override
   Future<void> deleteAll() => _storage.deleteAll();
+
+  @override
+  Future<List<String>> readAllKeys() =>
+      _storage.readAll().then((map) => map.keys.toList());
 }

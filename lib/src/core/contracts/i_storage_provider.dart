@@ -17,4 +17,6 @@ abstract interface class ISecureStorageProvider {
 
   /// Deletes all values in the storage.
   Future<void> deleteAll();
+
+  Future<List<String>> readAllKeys();
 }
